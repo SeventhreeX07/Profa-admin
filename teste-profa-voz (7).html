@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teste Profa Voz</title>
+<style>
+:root{--bg:#0F161C;--card:#18222B;--ink:#E7ECF0;--mute:#A9B6C2;--line:#2E3B47;--acc:#F97316;--err:#FF8A80;--ok:#7BD8A5}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;padding:32px 16px 160px}
+main{max-width:760px;margin:0 auto;display:grid;gap:20px}
+h1{margin:0;font-size:32px}p{margin:0;color:var(--mute)}
+section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px;display:grid;gap:12px}
+h2{margin:0;font-size:17px}
+label{display:grid;gap:4px;font-size:14px;color:var(--mute)}
+input{font:inherit;color:var(--ink);background:transparent;border:1px solid var(--line);border-radius:6px;padding:0 12px;min-height:44px;width:100%}
+input:focus-visible,button:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+.row{display:flex;gap:10px;flex-wrap:wrap}.row>*{flex:1 1 200px}.row.fit>button{flex:0 0 auto}
+button{font:inherit;font-weight:700;min-height:44px;padding:0 18px;border-radius:6px;border:0;background:var(--acc);color:#1A0C00;cursor:pointer}
+button.sec{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button:disabled{opacity:.5;cursor:not-allowed}
+#estado{font-size:14px;min-height:21px}.err{color:var(--err)}.ok{color:var(--ok)}
+#fala{font-size:22px;line-height:1.35;color:var(--ink)}
+dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;margin:0}dt{color:var(--mute)}dd{margin:0;font-weight:600;overflow-wrap:anywhere}
+pre{margin:0;padding:12px;background:var(--bg);border-radius:6px;font-size:13px;overflow:auto;max-height:220px}
+#widget{position:fixed;right:20px;bottom:20px;width:260px;padding:14px;border-radius:14px;background:rgba(125,170,235,.12);border:1px solid rgba(125,170,235,.45);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);transition:background .3s,border-color .3s}
+#widget.on{background:rgba(249,115,22,.14);border-color:rgba(249,115,22,.55)}
+#spec{width:100%;aspect-ratio:1;display:block}
+#modo{font-size:13px;font-weight:600;margin-top:6px;color:#A8C8F5}
+#widget.on #modo{color:#FDBA74}
+</style>
+</head>
+<body>
+<main>
+<header><h1>Teste Profa Voz</h1><p>Diga “Ativar Profa” para começar. “Obrigado Profa, até mais” ou “Desativar Profa” termina. Use Chrome ou Edge.</p></header>
+
+<section>
+<h2>1. Login rápido</h2>
+<div class="row">
+<label>Email do operador<input id="email" type="email" autocomplete="username"></label>
+<label>Palavra-passe<input id="pass" type="password" autocomplete="current-password"></label>
+</div>
+<div class="row fit"><button id="entrar">Entrar</button></div>
+<div id="estado" role="status">Sem sessão.</div>
+</section>
+
+<section>
+<h2>2. Voz e texto</h2>
+<div class="row fit"><button id="mic" class="sec" disabled>Iniciar escuta</button></div>
+<label>Comando por texto (sem microfone)<input id="texto" placeholder="Ex.: mostra as encomendas em preparação" disabled></label>
+<div class="row fit"><button id="enviar" disabled>Enviar</button></div>
+</section>
+
+<section aria-live="polite">
+<h2>3. Resposta</h2>
+<p id="fala">Ainda sem resposta.</p>
+<dl><dt>Ação</dt><dd id="acao">-</dd><dt>Parâmetro</dt><dd id="param">-</dd></dl>
+<pre id="raw">{}</pre>
+</section>
+</main>
+
+<div id="widget" aria-hidden="true"><canvas id="spec"></canvas><div id="modo">Modo espera</div></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const URL_SB = "https://yoopbvqsjslvuneafaft.supabase.co";
+const ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlvb3BidnFzanNsdnVuZWFmYWZ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ3NzQ2MTQsImV4cCI6MjExMDM1MDYxNH0.lTX2UgCJCxZCjDPJ6W_gQqSmRN6WzdwXiNzuWJjzusI";
+const CONTEXTO = { encomendas: [
+  { id: 101, cliente: "Maria Costa", etapa: "preparação", total: 18500 },
+  { id: 102, cliente: "João Neto", etapa: "preparação", total: 7200 },
+  { id: 103, cliente: "Ana Dias", etapa: "pronta", total: 12900 },
+  { id: 104, cliente: "Pedro Sá", etapa: "nova", total: 5400 } ] };
+let historico = [], token = "", nome = "operador", perfil = "-", ativa = false, falando = false, escuta = false;
+
+try { $("email").value = localStorage.getItem("profa_email") || ""; } catch {}
+function estado(m, c = "") { $("estado").textContent = m; $("estado").className = c; }
+const norm = (s) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+
+$("entrar").onclick = async () => {
+  try { localStorage.setItem("profa_email", $("email").value.trim()); } catch {}
+  estado("A entrar...");
+  try {
+    const r = await fetch(URL_SB + "/auth/v1/token?grant_type=password", {
+      method: "POST", headers: { "Content-Type": "application/json", apikey: ANON },
+      body: JSON.stringify({ email: $("email").value.trim(), password: $("pass").value }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error_description || d.msg || "Credenciais inválidas");
+    token = d.access_token;
+    nome = d.user.email.split("@")[0]; perfil = "-";
+    for (const [col, val] of [["user_id", d.user.id], ["id", d.user.id], ["email", d.user.email]]) {
+      const q = await fetch(URL_SB + "/rest/v1/staff_users?select=nome,perfil&" + col + "=eq." + encodeURIComponent(val) + "&limit=1",
+        { headers: { apikey: ANON, Authorization: "Bearer " + token } });
+      if (!q.ok) continue;
+      const rows = await q.json();
+      if (rows.length) { nome = rows[0].nome || nome; perfil = rows[0].perfil || "-"; break; }
+    }
+    ["mic", "texto", "enviar"].forEach((i) => { $(i).disabled = false; });
+    estado("Sessão iniciada · " + nome + " · perfil: " + perfil, "ok");
+  } catch (e) {
+    token = "";
+    const rede = e instanceof TypeError;
+    estado(rede ? "Sem ligação a " + URL_SB + ". Abra o ficheiro descarregado (não dentro do Claude), confirme que o projeto Supabase não está pausado e desative bloqueadores/VPN."
+      : "Erro: " + e.message, "err");
+  }
+};
+
+let vozPt = null;
+const NATURAIS = ["natural", "online", "google", "raquel", "francisca", "fernanda"];
+function escolherVoz() {
+  if (!("speechSynthesis" in window)) return;
+  const pts = speechSynthesis.getVoices().filter((v) => /^pt([-_](PT|BR))?$/i.test(v.lang));
+  const pontos = (v) => {
+    const n = v.name.toLowerCase();
+    let sc = 0;
+    NATURAIS.forEach((k, i) => { if (n.includes(k)) sc += 100 - i; });
+    if (/^pt[-_]PT$/i.test(v.lang)) sc += 5;
+    return sc;
+  };
+  vozPt = pts.sort((a, b) => pontos(b) - pontos(a)).at(0) || null;
+}
+if ("speechSynthesis" in window) { escolherVoz(); speechSynthesis.onvoiceschanged = escolherVoz; }
+
+function limparFala(txt) {
+  let t = String(txt).replace(/\.{2,}|\u2026/g, " ");
+  const nomeRx = String(nome).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  t = t.replace(new RegExp(",\\s*(Chefe|" + nomeRx + ")\\b", "gi"), " $1");
+  t = t.replace(/\bAdelton\b/gi, "Adélton").replace(/\bkwanzas?\b/gi, (k) => (k.toLowerCase().endsWith("s") ? "cuanzas" : "cuanza"));
+  return t.replace(/\s{2,}/g, " ").trim();
+}
+
+let falaId = 0;
+function falar(txt, depois) {
+  if (!("speechSynthesis" in window)) { depois && depois(); return; }
+  speechSynthesis.cancel();
+  if (!vozPt) escolherVoz();
+  const id = ++falaId;
+  const partes = (limparFala(txt).match(/[^.!?]+[.!?]*/g) || [txt]).map((x) => x.trim()).filter(Boolean);
+  let k = 0; falando = true;
+  const fim = () => { falando = false; depois && depois(); };
+  const prox = () => {
+    if (id !== falaId) return;
+    if (k >= partes.length) { fim(); return; }
+    const u = new SpeechSynthesisUtterance(partes[k++]);
+    if (vozPt) u.voice = vozPt;
+    u.lang = vozPt ? vozPt.lang : "pt-PT";
+    u.rate = 1.1; u.pitch = 1.02;
+    u.onend = prox;
+    u.onerror = prox;
+    speechSynthesis.speak(u);
+  };
+  prox();
+}
+function modo(on) {
+  ativa = on;
+  $("widget").classList.toggle("on", on);
+  $("modo").textContent = on ? "Profa ativa · a ouvir" : "Modo espera";
+}
+
+async function enviarProfa(texto) {
+  $("fala").textContent = "A pensar...";
+  try {
+    const r = await fetch(URL_SB + "/functions/v1/profa-admin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token, apikey: ANON },
+      body: JSON.stringify({ texto, contexto: CONTEXTO, historico: historico.slice(-6) }) });
+    const d = await r.json();
+    $("raw").textContent = JSON.stringify(d, null, 2);
+    if (!r.ok) { $("fala").textContent = "Erro " + r.status + ": " + (d.erro || d.message || "falha"); return; }
+    $("fala").textContent = d.fala || "";
+    $("acao").textContent = d.acao || "-";
+    $("param").textContent = d.parametro || "-";
+    if (d.fala) {
+      historico.push({ role: "user", text: texto }, { role: "model", text: d.fala });
+      historico = historico.slice(-6);
+      falar(d.fala);
+    }
+  } catch (e) { $("fala").textContent = "Erro de rede: " + e.message; }
+}
+
+function tratar(frase, doTexto) {
+  const n = norm(frase);
+  if (!ativa && /\bativar profa\b/.test(n)) {
+    historico = []; modo(true); const m = "Olá, " + nome + ". Estou pronta, o que precisa?";
+    $("fala").textContent = m; falar(m); return;
+  }
+  if (/obrigado profa|desativar profa/.test(n)) {
+    if (!ativa && !doTexto) return;
+    historico = [];
+    const m = "Até mais, " + nome + ".";
+    $("fala").textContent = m; falar(m, () => modo(false)); return;
+  }
+  if (ativa || doTexto) enviarProfa(frase);
+}
+
+$("enviar").onclick = () => { const t = $("texto").value.trim(); if (!t || !token) return; $("texto").value = ""; $("texto").focus(); tratar(t, true); };
+$("texto").addEventListener("keydown", (e) => { if (e.key === "Enter") $("enviar").click(); });
+
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec;
+if (!SR) { $("mic").title = "Sem reconhecimento de voz neste navegador (usa Chrome ou Edge)."; }
+else {
+  rec = new SR(); rec.lang = "pt-PT"; rec.continuous = true; rec.interimResults = false;
+  rec.onresult = (e) => {
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (!e.results.item(i).isFinal || falando) continue;
+      const t = e.results.item(i).item(0).transcript.trim();
+      if (t) tratar(t, false);
+    }
+  };
+  rec.onend = () => { if (escuta) { try { rec.start(); } catch {} } };
+  rec.onerror = (e) => { if (e.error !== "no-speech" && e.error !== "aborted") estado("Microfone: " + e.error, "err"); };
+}
+$("mic").onclick = async () => {
+  if (!SR) { estado("Este navegador não suporta reconhecimento de voz.", "err"); return; }
+  if (escuta) { escuta = false; rec.stop(); modo(false); parar(); $("mic").textContent = "Iniciar escuta"; return; }
+  escuta = true; $("mic").textContent = "Parar escuta";
+  await iniciar(); try { rec.start(); } catch {}
+};
+
+let aCtx, aStream, an, freq, raf;
+const cv = $("spec"), g = cv.getContext("2d");
+function parar() { if (aStream) aStream.getTracks().forEach((t) => t.stop()); if (aCtx) aCtx.close(); aStream = aCtx = an = null; }
+async function iniciar() {
+  try {
+    aStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    aCtx = new AudioContext(); an = aCtx.createAnalyser(); an.fftSize = 128; an.smoothingTimeConstant = 0.8;
+    aCtx.createMediaStreamSource(aStream).connect(an);
+    freq = new Uint8Array(an.frequencyBinCount);
+  } catch (e) { estado("Espectro indisponível: " + e.message, "err"); }
+}
+const NP = 1800, PTS = [];
+for (let i = 0; i < NP; i++) {
+  const y = 1 - 2 * (i + 0.5) / NP, r = Math.sqrt(1 - y * y), th = i * 2.399963;
+  PTS.push({ x: r * Math.cos(th), y, z: r * Math.sin(th), lon: th, j: Math.random() });
+}
+let nivel = 0, ang = 0;
+function desenhar() {
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth;
+  if (cv.width !== W * dpr) { cv.width = W * dpr; cv.height = W * dpr; }
+  const S = cv.width, R = S * 0.36, c = S / 2, t = performance.now();
+  g.clearRect(0, 0, S, S);
+  let alvo = 0.04;
+  if (falando) alvo = 0.35 + 0.25 * Math.sin(t / 170) * Math.sin(t / 410) + 0.1 * Math.random();
+  else if (an) { an.getByteFrequencyData(freq); let m = 0; for (let k = 1; k < 32; k++) m += freq.at(k); alvo = Math.min(1, (m / 31 / 255) * 2.2); }
+  nivel += (alvo - nivel) * 0.18;
+  ang += 0.004 + nivel * 0.01;
+  const ca = Math.cos(ang), sa = Math.sin(ang), tilt = 0.35, ct = Math.cos(tilt), st = Math.sin(tilt);
+  g.fillStyle = ativa ? "rgb(249,115,22)" : "rgb(168,200,245)";
+  const d = Math.max(1, S / 150);
+  for (const p of PTS) {
+    const x1 = p.x * ca + p.z * sa, z1 = -p.x * sa + p.z * ca;
+    const y2 = p.y * ct - z1 * st;
+    const rr = Math.min(1, Math.hypot(x1, y2));
+    const onda = Math.sin(p.lon * 3 + t / 420) * Math.cos(p.y * 4 + t / 330);
+    const k = 1 + nivel * (0.22 * onda + 0.18 * p.j * rr);
+    g.globalAlpha = 0.12 + 0.88 * Math.pow(rr, 4) * (0.7 + 0.3 * p.j);
+    g.fillRect(c + x1 * R * k, c + y2 * R * k, d, d);
+  }
+  g.globalAlpha = 1;
+  raf = requestAnimationFrame(desenhar);
+}
+desenhar();
+</script>
+</body>
+</html>
